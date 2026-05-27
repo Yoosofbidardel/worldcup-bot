@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import jdatetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -16,13 +17,34 @@ import api_client
 from scoring import calculate_points
 from excel_export import generate_excel
 from config import (
-    TELEGRAM_BOT_TOKEN, POLL_INTERVAL_MINUTES, DISPLAY_TIMEZONE,
+    TELEGRAM_BOT_TOKEN, POLL_INTERVAL_MINUTES,
     PTS_TOP_SCORER, PTS_CHAMPION,
 )
 
 logger = logging.getLogger(__name__)
-TZ = ZoneInfo(DISPLAY_TIMEZONE)
 PAGE_SIZE = 8
+
+_FA_MONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور",
+              "مهر","آبان","آذر","دی","بهمن","اسفند"]
+
+_STAGE_FA = {
+    "GROUP_STAGE":   "مرحله گروهی",
+    "LAST_32":       "مرحله ۳۲ تیم",
+    "LAST_16":       "یک‌هشتم نهایی",
+    "QUARTER_FINALS":"ربع‌نهایی",
+    "SEMI_FINALS":   "نیمه‌نهایی",
+    "THIRD_PLACE":   "رده‌بندی سوم",
+    "FINAL":         "فینال",
+}
+_STAGE_EN = {
+    "GROUP_STAGE":   "Group Stage",
+    "LAST_32":       "Round of 32",
+    "LAST_16":       "Round of 16",
+    "QUARTER_FINALS":"Quarter Final",
+    "SEMI_FINALS":   "Semi Final",
+    "THIRD_PLACE":   "3rd Place",
+    "FINAL":         "Final",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -36,8 +58,35 @@ def _is_locked(match) -> bool:
     return datetime.now(timezone.utc) >= dt
 
 
-def _fmt_date(match) -> str:
-    return datetime.fromisoformat(match["match_date"]).astimezone(TZ).strftime("%d %b %H:%M")
+def _group_settings(chat_id) -> dict:
+    if not chat_id:
+        return {"timezone": "Asia/Tehran", "date_format": "fa"}
+    g = db.get_group(chat_id)
+    return {
+        "timezone":    (g["timezone"]    or "Asia/Tehran") if g else "Asia/Tehran",
+        "date_format": (g["date_format"] or "fa")          if g else "fa",
+    }
+
+
+def _fmt_date(match, chat_id=None) -> str:
+    s = _group_settings(chat_id)
+    tz = ZoneInfo(s["timezone"])
+    dt = datetime.fromisoformat(match["match_date"]).astimezone(tz)
+    if s["date_format"] == "fa":
+        jdt = jdatetime.datetime.fromgregorian(datetime=dt)
+        return f"{jdt.day} {_FA_MONTHS[jdt.month - 1]} {dt.strftime('%H:%M')}"
+    return dt.strftime("%d %b %H:%M")
+
+
+def _stage_label(match, date_format="fa") -> str:
+    stage = match["stage"] or ""
+    group = match["group_name"] or ""
+    if stage == "GROUP_STAGE":
+        letter = group.replace("GROUP_", "") if group else "?"
+        return f"گروه {letter}" if date_format == "fa" else f"Group {letter}"
+    if date_format == "fa":
+        return _STAGE_FA.get(stage, stage)
+    return _STAGE_EN.get(stage, stage)
 
 
 def _ensure_registered(update: Update):
@@ -67,6 +116,32 @@ async def _send_or_edit(update: Update, text: str, keyboard=None, **kwargs):
 
 def _active_group(ctx: ContextTypes.DEFAULT_TYPE):
     return ctx.user_data.get("active_group")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  GROUP SETUP KEYBOARD
+# ═══════════════════════════════════════════════════════════════════
+
+def _build_setup_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    s = _group_settings(chat_id)
+    tz  = s["timezone"]
+    df  = s["date_format"]
+
+    def ck(condition): return "✅ " if condition else ""
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 زبان تاریخ:", callback_data="noop")],
+        [
+            InlineKeyboardButton(f"{ck(df=='fa')}شمسی (فارسی)", callback_data=f"gs:df:fa:{chat_id}"),
+            InlineKeyboardButton(f"{ck(df=='en')}میلادی (English)", callback_data=f"gs:df:en:{chat_id}"),
+        ],
+        [InlineKeyboardButton("🕐 منطقه زمانی:", callback_data="noop")],
+        [
+            InlineKeyboardButton(f"{ck(tz=='Asia/Tehran')}تهران (UTC+3:30)", callback_data=f"gs:tz:ir:{chat_id}"),
+            InlineKeyboardButton(f"{ck(tz=='Europe/Amsterdam')}آمستردام (UTC+2)", callback_data=f"gs:tz:nl:{chat_id}"),
+        ],
+        [InlineKeyboardButton("✅ ذخیره و نمایش دکمه ثبت‌نام", callback_data=f"gs:done:{chat_id}")],
+    ])
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -141,7 +216,8 @@ async def _show_main_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  MATCH LIST
 # ═══════════════════════════════════════════════════════════════════
 
-def _build_matches_keyboard(matches, page: int, back_cb="nav:main"):
+def _build_matches_keyboard(matches, page: int, chat_id=None, back_cb="nav:main"):
+    s = _group_settings(chat_id)
     start = page * PAGE_SIZE
     page_matches = matches[start: start + PAGE_SIZE]
     total_pages = (len(matches) + PAGE_SIZE - 1) // PAGE_SIZE
@@ -149,7 +225,9 @@ def _build_matches_keyboard(matches, page: int, back_cb="nav:main"):
     buttons = []
     for m in page_matches:
         locked = "🔒" if _is_locked(m) else "🟢"
-        label = f"{locked} {m['home_team']} – {m['away_team']}  {_fmt_date(m)}"
+        stage = _stage_label(m, s["date_format"])
+        date  = _fmt_date(m, chat_id)
+        label = f"{locked} {m['home_team']} – {m['away_team']}  |  {stage}  |  {date}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"ms:{m['id']}")])
 
     nav = []
@@ -181,18 +259,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if chat.type in ("group", "supergroup"):
         # Register the group (admin is whoever ran /start)
         db.upsert_group(chat.id, chat.title or "", user.id)
-        bot_username = (await ctx.bot.get_me()).username
         await update.message.reply_text(
-            "⚽ <b>ربات پیش‌بینی جام جهانی ۲۰۲۶</b>\n\n"
-            "برای شرکت در مسابقه پیش‌بینی، روی دکمه زیر کلیک کن "
-            "و در پیام خصوصی ثبت‌نام کن.\n\n"
-            "📌 بعد از ثبت‌نام تمام پیش‌بینی‌ها و نتایج شخصی فقط در پیام خصوصی نمایش داده می‌شه.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    "✅ ثبت‌نام و شروع بازی",
-                    url=f"https://t.me/{bot_username}?start=join_{chat.id}",
-                )
-            ]]),
+            "⚙️ <b>تنظیمات اولیه ربات</b>\n\n"
+            "قبل از شروع، لطفاً زبان تاریخ و منطقه زمانی رو انتخاب کن:",
+            reply_markup=_build_setup_keyboard(chat.id),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -284,6 +354,39 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
+    # ── Group setup (runs in group chat, admin only) ─────────────
+    if data.startswith("gs:"):
+        parts = data.split(":")          # gs : action : value : chat_id
+        action = parts[1]
+        value  = parts[2]
+        gcid   = int(parts[3])
+        group  = db.get_group(gcid)
+        if not group or group["admin_id"] != user_id:
+            await query.answer("⛔ فقط ادمین می‌تونه تنظیمات رو تغییر بده.", show_alert=True)
+            return
+        if action == "tz":
+            tz_map = {"ir": "Asia/Tehran", "nl": "Europe/Amsterdam"}
+            db.update_group_settings(gcid, timezone=tz_map[value])
+        elif action == "df":
+            db.update_group_settings(gcid, date_format=value)
+        elif action == "done":
+            bot_username = (await ctx.bot.get_me()).username
+            await query.edit_message_text(
+                "✅ <b>تنظیمات ذخیره شد!</b>\n\n"
+                "اعضای گروه می‌تونن روی دکمه زیر کلیک کنن تا ثبت‌نام کنن:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✅ ثبت‌نام و شروع بازی",
+                        url=f"https://t.me/{bot_username}?start=join_{gcid}",
+                    )
+                ]]),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        # Refresh the setup keyboard with updated checkmarks
+        await query.edit_message_reply_markup(_build_setup_keyboard(gcid))
+        return
+
     # ── Join / registration ──────────────────────────────────────
     if data.startswith("join:"):
         group_chat_id = int(data.split(":")[1])
@@ -328,7 +431,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not matches:
             await query.edit_message_text("هیچ بازی‌ای پیدا نشد.")
             return
-        text, kb = _build_matches_keyboard(matches, page)
+        text, kb = _build_matches_keyboard(matches, page, chat_id=chat_id)
         await query.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
@@ -343,11 +446,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("🔒 این بازی قفل شده.", show_alert=True)
             return
         ctx.user_data["pending_match"] = match_id
+        s = _group_settings(chat_id)
         existing = db.get_prediction(user_id, chat_id, match_id)
         existing_str = f"\n✏️ پیش‌بینی فعلی: <b>{existing['home_score']}-{existing['away_score']}</b>" if existing else ""
         await query.edit_message_text(
             f"⚽ <b>{match['home_team']} – {match['away_team']}</b>\n"
-            f"📅 {_fmt_date(match)}"
+            f"🏷 {_stage_label(match, s['date_format'])}\n"
+            f"📅 {_fmt_date(match, chat_id)}"
             f"{existing_str}\n\n"
             "نتیجه‌ات رو اینجا بنویس (مثلاً <code>2-1</code>):\n\n"
             "<i>برای برگشت /menu بزن</i>",
@@ -694,12 +799,14 @@ async def job_sync_and_score(ctx: ContextTypes.DEFAULT_TYPE):
                     url=f"https://t.me/{bot_username}?start=m{m['id']}",
                 )
             ]])
+            s = _group_settings(gid)
             try:
                 await ctx.bot.send_message(
                     gid,
                     f"🔔 <b>۲۴ ساعت تا بازی!</b>\n\n"
                     f"<b>{m['home_team']} – {m['away_team']}</b>\n"
-                    f"📅 {_fmt_date(m)} ({DISPLAY_TIMEZONE})\n\n"
+                    f"🏷 {_stage_label(m, s['date_format'])}\n"
+                    f"📅 {_fmt_date(m, gid)}\n\n"
                     "برای پیش‌بینی روی دکمه کلیک کن 👇",
                     reply_markup=keyboard,
                     parse_mode=ParseMode.HTML,

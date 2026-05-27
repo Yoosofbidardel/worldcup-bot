@@ -22,6 +22,8 @@ def init_db():
         chat_id     INTEGER PRIMARY KEY,
         title       TEXT,
         admin_id    INTEGER,
+        timezone    TEXT DEFAULT 'Asia/Tehran',
+        date_format TEXT DEFAULT 'fa',
         created_at  TEXT DEFAULT (datetime('now'))
     );
     CREATE TABLE IF NOT EXISTS users (
@@ -68,6 +70,12 @@ def init_db():
         PRIMARY KEY (user_id, chat_id, pred_type)
     );
     """)
+    # Migrate existing DBs that don't have the new columns yet
+    for col, default in [("timezone", "Asia/Tehran"), ("date_format", "fa")]:
+        try:
+            c.execute(f"ALTER TABLE groups ADD COLUMN {col} TEXT DEFAULT '{default}'")
+        except Exception:
+            pass
     c.commit()
 
 
@@ -84,6 +92,14 @@ def upsert_group(chat_id: int, title: str, admin_id: int):
 
 def get_group(chat_id: int):
     return _conn().execute("SELECT * FROM groups WHERE chat_id=?", (chat_id,)).fetchone()
+
+
+def update_group_settings(chat_id: int, timezone: str = None, date_format: str = None):
+    if timezone:
+        _conn().execute("UPDATE groups SET timezone=? WHERE chat_id=?", (timezone, chat_id))
+    if date_format:
+        _conn().execute("UPDATE groups SET date_format=? WHERE chat_id=?", (date_format, chat_id))
+    _conn().commit()
 
 
 def get_all_group_ids() -> list[int]:
