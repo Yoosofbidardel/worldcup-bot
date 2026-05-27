@@ -83,11 +83,10 @@ def _fmt_date(match, chat_id=None) -> str:
     dt = datetime.fromisoformat(match["match_date"]).astimezone(tz)
     if s["date_format"] == "fa":
         jdt = jdatetime.datetime.fromgregorian(datetime=dt)
-        # Persian digits ensure numbers flow RTL: ۲۱ خرداد ۲۱:۰۰
         day  = _to_fa_digits(str(jdt.day))
         time = _to_fa_digits(dt.strftime("%H:%M"))
-        return f"{day} {_FA_MONTHS[jdt.month - 1]} {time}"
-    return dt.strftime("%d %b %H:%M")
+        return f"{day} {_FA_MONTHS[jdt.month - 1]} | {time}"
+    return f"{dt.strftime('%d %b')} | {dt.strftime('%H:%M')}"
 
 
 def _stage_label(match, date_format="fa") -> str:
