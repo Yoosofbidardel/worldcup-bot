@@ -1,0 +1,20 @@
+# Environment — never commit secrets
+.env
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Excel exports
+excel_exports/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
