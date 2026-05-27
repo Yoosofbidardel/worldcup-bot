@@ -179,26 +179,66 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     if chat.type in ("group", "supergroup"):
-        # Register group + user, then tell them to use DM
+        # Register the group (admin is whoever ran /start)
         db.upsert_group(chat.id, chat.title or "", user.id)
-        db.upsert_user(user.id, chat.id, user.username or "", user.first_name or "")
         bot_username = (await ctx.bot.get_me()).username
         await update.message.reply_text(
-            "⚽ <b>ربات جام جهانی ۲۰۲۶ فعال شد!</b>\n\n"
-            "تمام پیش‌بینی‌ها و اطلاعات شخصی از طریق پیام خصوصی انجام می‌شه.\n\n"
-            f"👇 برای شروع اینجا کلیک کن:\n@{bot_username}",
+            "⚽ <b>ربات پیش‌بینی جام جهانی ۲۰۲۶</b>\n\n"
+            "برای شرکت در مسابقه پیش‌بینی، روی دکمه زیر کلیک کن "
+            "و در پیام خصوصی ثبت‌نام کن.\n\n"
+            "📌 بعد از ثبت‌نام تمام پیش‌بینی‌ها و نتایج شخصی فقط در پیام خصوصی نمایش داده می‌شه.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "✅ ثبت‌نام و شروع بازی",
+                    url=f"https://t.me/{bot_username}?start=join_{chat.id}",
+                )
+            ]]),
             parse_mode=ParseMode.HTML,
         )
         return
 
-    # DM — handle deep link payload e.g. /start m42 (match 42)
+    # DM — check payload
     payload = ctx.args[0] if ctx.args else ""
+
+    # Join a group: /start join_-123456
+    if payload.startswith("join_"):
+        try:
+            group_chat_id = int(payload[5:])
+        except ValueError:
+            await _show_main_menu(update, ctx)
+            return
+        group = db.get_group(group_chat_id)
+        if not group:
+            await update.message.reply_text("این گروه هنوز توسط ادمین فعال نشده. از ادمین بخواه /start بزنه.")
+            return
+        # Check if already registered
+        existing_groups = [g["chat_id"] for g in db.get_user_groups(user.id)]
+        if group_chat_id in existing_groups:
+            ctx.user_data["active_group"] = group_chat_id
+            await update.message.reply_text(
+                f"✅ قبلاً توی <b>{group['title']}</b> ثبت‌نام کردی!\n\nداری به منوی اصلی می‌ری…",
+                parse_mode=ParseMode.HTML,
+            )
+            await _show_main_menu(update, ctx)
+            return
+        await update.message.reply_text(
+            f"⚽ می‌خوای توی <b>{group['title']}</b> شرکت کنی و پیش‌بینی کنی؟",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ بله، ثبت‌نام می‌کنم", callback_data=f"join:{group_chat_id}"),
+                InlineKeyboardButton("❌ نه", callback_data="nav:main"),
+            ]]),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Deep link to a match: /start m42
     if payload.startswith("m") and payload[1:].isdigit():
         match_id = int(payload[1:])
         ctx.user_data["pending_match"] = match_id
         match = db.get_match(match_id)
         if match and not _is_locked(match):
-            existing = db.get_prediction(user.id, _active_group(ctx), match_id)
+            chat_id = _active_group(ctx)
+            existing = db.get_prediction(user.id, chat_id, match_id) if chat_id else None
             existing_str = f"\n✏️ پیش‌بینی فعلی: <b>{existing['home_score']}-{existing['away_score']}</b>" if existing else ""
             await update.message.reply_text(
                 f"⚽ <b>{match['home_team']} – {match['away_team']}</b>\n"
@@ -243,6 +283,20 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+
+    # ── Join / registration ──────────────────────────────────────
+    if data.startswith("join:"):
+        group_chat_id = int(data.split(":")[1])
+        group = db.get_group(group_chat_id)
+        db.upsert_user(user_id, group_chat_id, update.effective_user.username or "", update.effective_user.first_name or "")
+        ctx.user_data["active_group"] = group_chat_id
+        group_title = group["title"] if group else "گروه"
+        await query.edit_message_text(
+            f"✅ <b>ثبت‌نام انجام شد!</b>\n\nخوش اومدی به <b>{group_title}</b>.\n\nحالا می‌تونی بازی‌ها رو پیش‌بینی کنی 🎉",
+            parse_mode=ParseMode.HTML,
+        )
+        await _show_main_menu(update, ctx)
+        return
 
     # ── Group selection ──────────────────────────────────────────
     if data.startswith("grp:"):
@@ -512,8 +566,7 @@ async def on_private_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════
 
 async def on_group_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user and not update.effective_user.is_bot:
-        _ensure_registered(update)
+    pass  # Group messages are not processed — registration is via DM only
 
 
 async def on_group_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
