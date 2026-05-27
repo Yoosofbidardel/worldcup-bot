@@ -95,7 +95,7 @@ def _stage_label(match, date_format="fa") -> str:
     group = match["group_name"] or ""
     if stage == "GROUP_STAGE":
         letter = group.replace("GROUP_", "") if group else "؟"
-        return f"مرحله گروهی {letter} گروه" if date_format == "fa" else f"Group Stage · Group {letter}"
+        return f"مرحله گروهی {letter}" if date_format == "fa" else f"Group Stage · Group {letter}"
     if date_format == "fa":
         return _STAGE_FA.get(stage, stage)
     return _STAGE_EN.get(stage, stage)
