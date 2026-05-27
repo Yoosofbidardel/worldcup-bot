@@ -95,8 +95,7 @@ def _stage_label(match, date_format="fa") -> str:
     group = match["group_name"] or ""
     if stage == "GROUP_STAGE":
         letter = group.replace("GROUP_", "") if group else "؟"
-        # RTL order: letter first so it sits on the right side
-        return f"{letter} گروه" if date_format == "fa" else f"Group {letter}"
+        return f"مرحله گروهی {letter} گروه" if date_format == "fa" else f"Group Stage · Group {letter}"
     if date_format == "fa":
         return _STAGE_FA.get(stage, stage)
     return _STAGE_EN.get(stage, stage)
@@ -243,7 +242,11 @@ def _build_matches_keyboard(matches, page: int, chat_id=None, back_cb="nav:main"
         date  = _fmt_date(m, chat_id)
         home  = _team(m["home_team"], df)
         away  = _team(m["away_team"], df)
-        label = f"{locked} {home} – {away}  |  {stage}  |  {date}"
+        if df == "fa":
+            # RTL text first to anchor BiDi correctly, then LTR match name
+            label = f"{locked} {stage} · {date}\n{home} – {away}"
+        else:
+            label = f"{locked} {home} – {away}  ·  {stage}  ·  {date}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"ms:{m['id']}")])
 
     nav = []
