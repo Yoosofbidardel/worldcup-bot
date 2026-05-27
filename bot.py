@@ -390,15 +390,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif action == "df":
             db.update_group_settings(gcid, date_format=value)
         elif action == "done":
-            bot_username = (await ctx.bot.get_me()).username
             await query.edit_message_text(
                 "✅ <b>تنظیمات ذخیره شد!</b>\n\n"
                 "اعضای گروه می‌تونن روی دکمه زیر کلیک کنن تا ثبت‌نام کنن:",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "✅ ثبت‌نام و شروع بازی",
-                        url=f"https://t.me/{bot_username}?start=join_{gcid}",
-                    )
+                    InlineKeyboardButton("✅ ثبت‌نام و شروع بازی", callback_data=f"reqjoin:{gcid}")
                 ]]),
                 parse_mode=ParseMode.HTML,
             )
@@ -408,6 +404,35 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_reply_markup(_build_setup_keyboard(gcid))
         except BadRequest:
             pass  # already showing the same keyboard
+        return
+
+    # ── Register button tapped in group ─────────────────────────
+    if data.startswith("reqjoin:"):
+        gcid  = int(data.split(":", 1)[1])
+        group = db.get_group(gcid)
+        group_title = group["title"] if group else "گروه"
+
+        if gcid in [g["chat_id"] for g in db.get_user_groups(user_id)]:
+            await query.answer("✅ قبلاً توی این گروه ثبت‌نام کردی!", show_alert=True)
+            return
+
+        sent = await _try_dm(
+            ctx.bot, user_id,
+            f"⚽ می‌خوای توی <b>{group_title}</b> شرکت کنی و پیش‌بینی کنی؟",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ بله، ثبت‌نام می‌کنم", callback_data=f"join:{gcid}"),
+                InlineKeyboardButton("❌ نه", callback_data="noop"),
+            ]]),
+            parse_mode=ParseMode.HTML,
+        )
+        if sent:
+            await query.answer("پیام خصوصی برات فرستادم ✉️")
+        else:
+            bot_username = (await ctx.bot.get_me()).username
+            await query.answer(
+                f"برای ثبت‌نام ابتدا یه بار با ربات چت خصوصی شروع کن:\n@{bot_username}",
+                show_alert=True,
+            )
         return
 
     # ── Join / registration ──────────────────────────────────────
