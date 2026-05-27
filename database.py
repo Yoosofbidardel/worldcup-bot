@@ -60,6 +60,12 @@ def init_db():
         PRIMARY KEY (user_id, chat_id, match_id),
         FOREIGN KEY (match_id) REFERENCES matches(id)
     );
+    CREATE TABLE IF NOT EXISTS group_admins (
+        chat_id     INTEGER,
+        user_id     INTEGER,
+        added_at    TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (chat_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS special_predictions (
         user_id         INTEGER,
         chat_id         INTEGER,
@@ -132,7 +138,54 @@ def get_user_groups(user_id: int):
 
 def is_group_admin(user_id: int, chat_id: int) -> bool:
     group = get_group(chat_id)
+    if not group:
+        return False
+    if group["admin_id"] == user_id:
+        return True
+    row = _conn().execute(
+        "SELECT 1 FROM group_admins WHERE chat_id=? AND user_id=?", (chat_id, user_id)
+    ).fetchone()
+    return row is not None
+
+
+def is_primary_admin(user_id: int, chat_id: int) -> bool:
+    group = get_group(chat_id)
     return bool(group and group["admin_id"] == user_id)
+
+
+def add_group_admin(chat_id: int, user_id: int):
+    _conn().execute(
+        "INSERT OR IGNORE INTO group_admins (chat_id, user_id) VALUES (?, ?)",
+        (chat_id, user_id),
+    )
+    _conn().commit()
+
+
+def remove_group_admin(chat_id: int, user_id: int):
+    _conn().execute(
+        "DELETE FROM group_admins WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id),
+    )
+    _conn().commit()
+
+
+def get_group_admins(chat_id: int) -> list:
+    """Return all co-admins (not including primary admin)."""
+    return _conn().execute(
+        "SELECT ga.user_id, u.first_name, u.username FROM group_admins ga "
+        "LEFT JOIN users u ON u.user_id=ga.user_id AND u.chat_id=ga.chat_id "
+        "WHERE ga.chat_id=?",
+        (chat_id,),
+    ).fetchall()
+
+
+def find_user_by_username(chat_id: int, username: str):
+    """Find a registered user in a group by their @username."""
+    username = username.lstrip("@").lower()
+    return _conn().execute(
+        "SELECT * FROM users WHERE chat_id=? AND LOWER(username)=?",
+        (chat_id, username),
+    ).fetchone()
 
 
 # ── Match management ─────────────────────────────────────────────

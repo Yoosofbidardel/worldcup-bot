@@ -372,12 +372,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Group setup (runs in group chat, admin only) ─────────────
     if data.startswith("gs:"):
-        parts = data.split(":")          # gs : action : value : chat_id
-        action = parts[1]
-        value  = parts[2]
-        gcid   = int(parts[3])
-        group  = db.get_group(gcid)
-        if not group or group["admin_id"] != user_id:
+        # Format: gs:action:value:CHATID  — split max 4, last part is chat_id (may be negative)
+        _, action, value, raw_id = data.split(":", 3)
+        gcid  = int(raw_id)
+        group = db.get_group(gcid)
+        if not group or not db.is_group_admin(user_id, gcid):
             await query.answer("⛔ فقط ادمین می‌تونه تنظیمات رو تغییر بده.", show_alert=True)
             return
         if action == "tz":
@@ -400,12 +399,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
         # Refresh the setup keyboard with updated checkmarks
-        await query.edit_message_reply_markup(_build_setup_keyboard(gcid))
+        try:
+            await query.edit_message_reply_markup(_build_setup_keyboard(gcid))
+        except BadRequest:
+            pass  # already showing the same keyboard
         return
 
     # ── Join / registration ──────────────────────────────────────
     if data.startswith("join:"):
-        group_chat_id = int(data.split(":")[1])
+        group_chat_id = int(data.split(":", 1)[1])
         group = db.get_group(group_chat_id)
         db.upsert_user(user_id, group_chat_id, update.effective_user.username or "", update.effective_user.first_name or "")
         ctx.user_data["active_group"] = group_chat_id
@@ -615,7 +617,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "برای اهدای امتیاز گلزن:\n"
             "<code>/awardtopscorer نام‌بازیکن</code>\n\n"
             "برای اهدای امتیاز قهرمان:\n"
-            "<code>/awardchampion نام‌تیم</code>",
+            "<code>/awardchampion نام‌تیم</code>\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "👥 <b>مدیریت ادمین‌ها</b>\n\n"
+            "اضافه کردن: <code>/addadmin @username</code>\n"
+            "حذف کردن: <code>/removeadmin @username</code>",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 منوی اصلی", callback_data="nav:main")
             ]]),
@@ -746,6 +752,58 @@ async def cmd_awardchampion(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("هیچ‌کس این تیم رو پیش‌بینی نکرده بود.")
 
 
+# ── Admin management ─────────────────────────────────────────────
+
+async def cmd_addadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = _active_group(ctx)
+    if not chat_id or not db.is_group_admin(user_id, chat_id):
+        await update.message.reply_text("⛔ فقط ادمین گروه.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("استفاده: /addadmin @username")
+        return
+    username = ctx.args[0].lstrip("@")
+    target = db.find_user_by_username(chat_id, username)
+    if not target:
+        await update.message.reply_text(f"کاربر @{username} توی این گروه ثبت‌نام نکرده.")
+        return
+    if db.is_group_admin(target["user_id"], chat_id):
+        await update.message.reply_text(f"@{username} از قبل ادمینه.")
+        return
+    db.add_group_admin(chat_id, target["user_id"])
+    await update.message.reply_text(
+        f"✅ <b>{target['first_name']}</b> (@{username}) الان ادمین گروهه.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_removeadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = _active_group(ctx)
+    if not chat_id or not db.is_primary_admin(user_id, chat_id):
+        await update.message.reply_text("⛔ فقط ادمین اصلی (کسی که /start رو زده) می‌تونه ادمین حذف کنه.")
+        return
+    if not ctx.args:
+        admins = db.get_group_admins(chat_id)
+        if not admins:
+            await update.message.reply_text("هیچ ادمین اضافی‌ای وجود نداره.")
+            return
+        lines = ["ادمین‌های فعلی:\n"]
+        for a in admins:
+            lines.append(f"  • {a['first_name'] or '?'} (@{a['username'] or '?'})")
+        lines.append("\nبرای حذف: /removeadmin @username")
+        await update.message.reply_text("\n".join(lines))
+        return
+    username = ctx.args[0].lstrip("@")
+    target = db.find_user_by_username(chat_id, username)
+    if not target:
+        await update.message.reply_text(f"کاربر @{username} پیدا نشد.")
+        return
+    db.remove_group_admin(chat_id, target["user_id"])
+    await update.message.reply_text(f"✅ @{username} دیگه ادمین نیست.")
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  BACKGROUND JOBS
 # ═══════════════════════════════════════════════════════════════════
@@ -848,6 +906,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("awardtopscorer", cmd_awardtopscorer))
     app.add_handler(CommandHandler("awardchampion", cmd_awardchampion))
+    app.add_handler(CommandHandler("addadmin", cmd_addadmin))
+    app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
 
     # All callbacks (single handler, routed internally)
     app.add_handler(CallbackQueryHandler(on_callback))
