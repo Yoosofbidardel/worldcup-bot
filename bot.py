@@ -27,6 +27,15 @@ PAGE_SIZE = 8
 _FA_MONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور",
               "مهر","آبان","آذر","دی","بهمن","اسفند"]
 
+def _to_fa_digits(s: str) -> str:
+    return s.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+def _team(name: str, df: str = "fa") -> str:
+    """Translate TBD and handle empty team names."""
+    if not name or name.upper() == "TBD":
+        return "نامشخص" if df == "fa" else "TBD"
+    return name
+
 _STAGE_FA = {
     "GROUP_STAGE":   "مرحله گروهی",
     "LAST_32":       "مرحله ۳۲ تیم",
@@ -74,7 +83,10 @@ def _fmt_date(match, chat_id=None) -> str:
     dt = datetime.fromisoformat(match["match_date"]).astimezone(tz)
     if s["date_format"] == "fa":
         jdt = jdatetime.datetime.fromgregorian(datetime=dt)
-        return f"{jdt.day} {_FA_MONTHS[jdt.month - 1]} {dt.strftime('%H:%M')}"
+        # Persian digits ensure numbers flow RTL: ۲۱ خرداد ۲۱:۰۰
+        day  = _to_fa_digits(str(jdt.day))
+        time = _to_fa_digits(dt.strftime("%H:%M"))
+        return f"{day} {_FA_MONTHS[jdt.month - 1]} {time}"
     return dt.strftime("%d %b %H:%M")
 
 
@@ -82,8 +94,9 @@ def _stage_label(match, date_format="fa") -> str:
     stage = match["stage"] or ""
     group = match["group_name"] or ""
     if stage == "GROUP_STAGE":
-        letter = group.replace("GROUP_", "") if group else "?"
-        return f"گروه {letter}" if date_format == "fa" else f"Group {letter}"
+        letter = group.replace("GROUP_", "") if group else "؟"
+        # RTL order: letter first so it sits on the right side
+        return f"{letter} گروه" if date_format == "fa" else f"Group {letter}"
     if date_format == "fa":
         return _STAGE_FA.get(stage, stage)
     return _STAGE_EN.get(stage, stage)
@@ -225,9 +238,12 @@ def _build_matches_keyboard(matches, page: int, chat_id=None, back_cb="nav:main"
     buttons = []
     for m in page_matches:
         locked = "🔒" if _is_locked(m) else "🟢"
-        stage = _stage_label(m, s["date_format"])
+        df    = s["date_format"]
+        stage = _stage_label(m, df)
         date  = _fmt_date(m, chat_id)
-        label = f"{locked} {m['home_team']} – {m['away_team']}  |  {stage}  |  {date}"
+        home  = _team(m["home_team"], df)
+        away  = _team(m["away_team"], df)
+        label = f"{locked} {home} – {away}  |  {stage}  |  {date}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"ms:{m['id']}")])
 
     nav = []
@@ -446,12 +462,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer("🔒 این بازی قفل شده.", show_alert=True)
             return
         ctx.user_data["pending_match"] = match_id
-        s = _group_settings(chat_id)
+        s    = _group_settings(chat_id)
+        df   = s["date_format"]
+        home = _team(match["home_team"], df)
+        away = _team(match["away_team"], df)
         existing = db.get_prediction(user_id, chat_id, match_id)
         existing_str = f"\n✏️ پیش‌بینی فعلی: <b>{existing['home_score']}-{existing['away_score']}</b>" if existing else ""
         await query.edit_message_text(
-            f"⚽ <b>{match['home_team']} – {match['away_team']}</b>\n"
-            f"🏷 {_stage_label(match, s['date_format'])}\n"
+            f"⚽ <b>{home} – {away}</b>\n"
+            f"🏷 {_stage_label(match, df)}\n"
             f"📅 {_fmt_date(match, chat_id)}"
             f"{existing_str}\n\n"
             "نتیجه‌ات رو اینجا بنویس (مثلاً <code>2-1</code>):\n\n"
@@ -799,13 +818,14 @@ async def job_sync_and_score(ctx: ContextTypes.DEFAULT_TYPE):
                     url=f"https://t.me/{bot_username}?start=m{m['id']}",
                 )
             ]])
-            s = _group_settings(gid)
+            s  = _group_settings(gid)
+            df = s["date_format"]
             try:
                 await ctx.bot.send_message(
                     gid,
                     f"🔔 <b>۲۴ ساعت تا بازی!</b>\n\n"
-                    f"<b>{m['home_team']} – {m['away_team']}</b>\n"
-                    f"🏷 {_stage_label(m, s['date_format'])}\n"
+                    f"<b>{_team(m['home_team'], df)} – {_team(m['away_team'], df)}</b>\n"
+                    f"🏷 {_stage_label(m, df)}\n"
                     f"📅 {_fmt_date(m, gid)}\n\n"
                     "برای پیش‌بینی روی دکمه کلیک کن 👇",
                     reply_markup=keyboard,
