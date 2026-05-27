@@ -372,8 +372,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Group setup (runs in group chat, admin only) ─────────────
     if data.startswith("gs:"):
-        # Format: gs:action:value:CHATID  — split max 4, last part is chat_id (may be negative)
-        _, action, value, raw_id = data.split(":", 3)
+        # gs:tz:ir:CHATID  or  gs:df:fa:CHATID  or  gs:done:CHATID
+        parts = data.split(":", 3)
+        action = parts[1]
+        if action == "done":
+            value  = None
+            raw_id = parts[2]
+        else:
+            value  = parts[2]
+            raw_id = parts[3]
         gcid  = int(raw_id)
         group = db.get_group(gcid)
         if not group or not db.is_group_admin(user_id, gcid):
