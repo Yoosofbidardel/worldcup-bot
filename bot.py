@@ -85,7 +85,7 @@ def _fmt_date(match, chat_id=None) -> str:
         jdt = jdatetime.datetime.fromgregorian(datetime=dt)
         day  = _to_fa_digits(str(jdt.day))
         time = _to_fa_digits(dt.strftime("%H:%M"))
-        return f"{day} {_FA_MONTHS[jdt.month - 1]} | {time}"
+        return f"{_FA_MONTHS[jdt.month - 1]} {day} | {time}"
     return f"{dt.strftime('%d %b')} | {dt.strftime('%H:%M')}"
 
 
